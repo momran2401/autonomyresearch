@@ -4,6 +4,8 @@ import datetime
 import os
 import csv
 import serial
+import re
+import threading
 import RPi.GPIO as GPIO
 from RPLCD.gpio import CharLCD
 import board
@@ -11,93 +13,127 @@ import busio
 import adafruit_bno055
 
 # ──────────────────────────────────────────────────────────────────────────────
-# 1) CONFIGURATION & PIN ASSIGNMENTS (BCM MODE)
+# 1) CONFIGURATION
 # ──────────────────────────────────────────────────────────────────────────────
 
-THRESHOLD_DEG = 4.0    # tilt tolerance in degrees
+THRESHOLD_DEG = 4.0       # tilt tolerance for LED/buzzer
+HISTORY_WINDOW = 10       # how many past entries to keep
+SAVE_MESSAGE_DURATION = 1 # seconds to show “Data saved”
+DELETE_MESSAGE_DURATION = 1 # seconds to show “Entry deleted”
 
-# GPIO pins (BCM) for buttons
-SAVE_BUTTON_PIN   = 17  # Save / Continue
-DELETE_BUTTON_PIN = 27  # Delete last entry
+GREEN_LED_PIN = 4   # Green LED (tilt OK)
+RED_LED_PIN   = 18  # Red LED (tilt)
+BUZZER_PIN    = 25  # Buzzer via PWM
 
-# GPIO pins (BCM) for LEDs and buzzer
-GREEN_LED_PIN = 4   # Green LED
-RED_LED_PIN   = 18  # Red LED
-BUZZER_PIN    = 25  # Active buzzer
-
-# LCD #1 (top display) wiring in BCM
+# LCD #1 (LiDAR + tilt)
 LCD1_PINS = {
-    'pin_rs': 26,                # BCM 26
-    'pin_rw': None,              # RW tied to GND
-    'pin_e': 19,                 # BCM 19
-    'pins_data': [13, 6, 5, 11]  # D4→BCM 13, D5→BCM 6, D6→BCM 5, D7→BCM 11
+    'pin_rs': 26,
+    'pin_rw': None,
+    'pin_e': 19,
+    'pins_data': [13, 6, 5, 11]
 }
 
-# LCD #2 (bottom display) wiring in BCM
+# LCD #2 (GPS/time/ALT + prompts/history)
 LCD2_PINS = {
-    'pin_rs': 21,                # BCM 21
-    'pin_rw': None,              # RW tied to GND
-    'pin_e': 20,                 # BCM 20
-    'pins_data': [16, 12, 7, 8]  # D4→BCM 16, D5→BCM 12, D6→BCM 7, D7→BCM 8
+    'pin_rs': 21,
+    'pin_rw': None,
+    'pin_e': 20,
+    'pins_data': [16, 12, 7, 8]
 }
 
-# LiDAR serial port (adjust if yours is /dev/ttyACM0 instead)
+# LiDAR over USB
 LIDAR_PORT = '/dev/ttyUSB0'
 LIDAR_BAUD = 115200
 
-# CSV file path
+# Arduino Nano over USB (buttons & joystick)
+ARDUINO_PORT = '/dev/ttyACM0'
+ARDUINO_BAUD = 115200
+
+# GPS via Pi hardware UART
+GPS_PORT = '/dev/serial0'
+GPS_BAUD = 9600
+
+# CSV path (with seconds)
 CSV_PATH = os.path.expanduser('~/lidar_data.csv')
 
-# Fixed GPS values for this test
-TEST_LAT = '100.420'
-TEST_LON = '420.100'
-TEST_ALT = '120.4'
-GPS_FIX  = 'Yes'
+# ──────────────────────────────────────────────────────────────────────────────
+# 2) NMEA PARSER (GPS)
+# ──────────────────────────────────────────────────────────────────────────────
+def parse_nmea(sentence):
+    fields = sentence.strip().split(',')
+    if not fields or not fields[0].startswith('$GP'):
+        return {}
+    typ = fields[0][3:]
+    out = {'type': typ, 'lat': None, 'lon': None, 'alt': None, 'fix': False, 'time_utc': None}
+    def conv(raw, hemi):
+        if not raw or not hemi:
+            return None
+        deg = float(raw)//100
+        minu = float(raw) - deg*100
+        dec = deg + minu/60
+        if hemi in ('S','W'):
+            dec = -dec
+        return dec
+    if typ == 'GGA':
+        raw_lat, hemi_ns = fields[2], fields[3]
+        raw_lon, hemi_ew = fields[4], fields[5]
+        fixq = fields[6]
+        alt   = fields[9]
+        lat = conv(raw_lat, hemi_ns)
+        lon = conv(raw_lon, hemi_ew)
+        out['lat'] = lat
+        out['lon'] = lon
+        out['fix'] = (fixq!='' and int(fixq)>0)
+        try:
+            out['alt'] = float(alt)
+        except:
+            out['alt'] = None
+    elif typ == 'RMC':
+        raw_time = fields[1]
+        status   = fields[2]
+        raw_lat, hemi_ns = fields[3], fields[4]
+        raw_lon, hemi_ew = fields[5], fields[6]
+        lat = conv(raw_lat, hemi_ns)
+        lon = conv(raw_lon, hemi_ew)
+        out['lat'] = lat
+        out['lon'] = lon
+        out['fix'] = (status=='A')
+        if raw_time and len(raw_time)>=6:
+            hh, mm, ss = raw_time[0:2], raw_time[2:4], raw_time[4:6]
+            out['time_utc'] = f"{hh}:{mm}:{ss}"
+    return out
 
 # ──────────────────────────────────────────────────────────────────────────────
-# 2) HELPER: TILT DIRECTION
+# 3) TILT DIRECTION HELPER
 # ──────────────────────────────────────────────────────────────────────────────
 def get_tilt_direction(roll, pitch, thresh=THRESHOLD_DEG):
-    """
-    Return:
-      - "OK" if |roll| and |pitch| ≤ thresh
-      - Otherwise, combination of N/S (pitch) + E/W (roll) (e.g. "N", "SW", etc.)
-      - "??" if sensor not ready
-    """
     if roll is None or pitch is None:
         return "??"
     dirs = []
-    if pitch >  thresh:
-        dirs.append("S")
-    elif pitch < -thresh:
-        dirs.append("N")
-    if roll  >  thresh:
-        dirs.append("W")
-    elif roll  < -thresh:
-        dirs.append("E")
+    if pitch >  thresh: dirs.append("S")
+    elif pitch < -thresh: dirs.append("N")
+    if roll  >  thresh: dirs.append("W")
+    elif roll  < -thresh: dirs.append("E")
     return "OK" if not dirs else "".join(dirs)
 
 # ──────────────────────────────────────────────────────────────────────────────
-# 3) SETUP: GPIO, LCDs, IMU, LiDAR, CSV
+# 4) GPIO + Device SETUP
 # ──────────────────────────────────────────────────────────────────────────────
 
 GPIO.setwarnings(False)
 GPIO.setmode(GPIO.BCM)
 
-# Buttons
-GPIO.setup(SAVE_BUTTON_PIN, GPIO.IN, pull_up_down=GPIO.PUD_UP)
-GPIO.setup(DELETE_BUTTON_PIN, GPIO.IN, pull_up_down=GPIO.PUD_UP)
-
-# LEDs and buzzer
+# LEDs / buzzer
 GPIO.setup(GREEN_LED_PIN, GPIO.OUT)
 GPIO.setup(RED_LED_PIN,   GPIO.OUT)
 GPIO.setup(BUZZER_PIN,    GPIO.OUT)
-
 GPIO.output(GREEN_LED_PIN, GPIO.LOW)
 GPIO.output(RED_LED_PIN,   GPIO.LOW)
-GPIO.output(BUZZER_PIN,    GPIO.LOW)
 
-# LCD #1 (top)
+# PWM for buzzer at 1 kHz
+buzzer_pwm = GPIO.PWM(BUZZER_PIN, 1000)
+
+# LCD #1
 lcd1 = CharLCD(
     pin_rs=LCD1_PINS['pin_rs'],
     pin_rw=LCD1_PINS['pin_rw'],
@@ -109,7 +145,7 @@ lcd1 = CharLCD(
 )
 lcd1.clear()
 
-# LCD #2 (bottom)
+# LCD #2
 lcd2 = CharLCD(
     pin_rs=LCD2_PINS['pin_rs'],
     pin_rw=LCD2_PINS['pin_rw'],
@@ -121,204 +157,429 @@ lcd2 = CharLCD(
 )
 lcd2.clear()
 
-# IMU (BNO055) over I²C
-i2c = busio.I2C(board.SCL, board.SDA)    # SCL=BCM 3, SDA=BCM 2
+# IMU (BNO055)
+i2c = busio.I2C(board.SCL, board.SDA)
 sensor = adafruit_bno055.BNO055_I2C(i2c)
 
-# LiDAR serial
+# LiDAR
 try:
     lidar_ser = serial.Serial(LIDAR_PORT, LIDAR_BAUD, timeout=0.1)
     time.sleep(0.5)
-except Exception:
+    lidar_ser.reset_input_buffer()
+except:
     lidar_ser = None
 
-# CSV setup: write header if new
+# GPS
+try:
+    gps_ser = serial.Serial(GPS_PORT, GPS_BAUD, timeout=0.1)
+    time.sleep(0.5)
+    gps_ser.reset_input_buffer()
+except:
+    gps_ser = None
+
+# Arduino Nano
+try:
+    arduino_ser = serial.Serial(ARDUINO_PORT, ARDUINO_BAUD, timeout=0.1)
+    time.sleep(0.5)
+    arduino_ser.reset_input_buffer()
+except:
+    arduino_ser = None
+
+# Ensure CSV exists
 if not os.path.isfile(CSV_PATH):
     with open(CSV_PATH, 'w', newline='') as f:
         writer = csv.writer(f)
-        writer.writerow(['Date','Time','Lat','Lon','Alt','Distance_m','GPS_fix'])
+        writer.writerow(['Date','Time','Lat','Lon','Alt','Distance_m','Roll','Pitch','GPS_fix'])
 
-saved_entries = []  # for in-memory deletions
+saved_entries = []
 
-# Custom “°” char for lcd1 line 2 (CGRAM 0)
+# Custom “°” char for lcd1
 deg_bitmap = [
-    0b00111,  # ..○○○
-    0b01001,  # .○..○
-    0b00111,  # ..○○○
-    0b00000,  # .....
-    0b00000,  # .....
-    0b00000,  # .....
-    0b00000,  # .....
-    0b00000   # .....
+    0b00111,
+    0b01001,
+    0b00111,
+    0b00000,
+    0b00000,
+    0b00000,
+    0b00000,
+    0b00000
 ]
 lcd1.create_char(0, bytearray(deg_bitmap))
 
-# Button state memory
-prev_save_state   = GPIO.input(SAVE_BUTTON_PIN)
-prev_delete_state = GPIO.input(DELETE_BUTTON_PIN)
+# State variables
+in_history_mode     = False
+history_index       = 0
 
-display_freeze     = False
-delete_confirm     = False
+display_freeze      = False
+delete_confirm      = False
 delete_prompt_shown = False
 
+# GPS state
+gps_lat         = None
+gps_lon         = None
+gps_alt         = None
+gps_fix         = False
+gps_time_utc    = None
+gps_last_update = 0.0
+
+# Shared for Arduino commands
+arduino_command   = None
+arduino_timestamp = 0.0
+arduino_lock      = threading.Lock()
+
 # ──────────────────────────────────────────────────────────────────────────────
-# 4) MAIN LOOP
+# 5) THREAD: READ ARDUINO (buttons & joystick)
+# ──────────────────────────────────────────────────────────────────────────────
+def read_arduino():
+    global arduino_command, arduino_timestamp
+    if not arduino_ser:
+        return
+    while True:
+        line = arduino_ser.readline().decode('ascii', errors='ignore').strip()
+        if not line:
+            time.sleep(0.02)
+            continue
+        if line in ("SAVE_PRESS", "DELETE_PRESS", "HISTORY", "UP", "DOWN"):
+            with arduino_lock:
+                if line != arduino_command:
+                    arduino_command = line
+                    arduino_timestamp = time.time()
+        time.sleep(0.01)
+
+if arduino_ser:
+    threading.Thread(target=read_arduino, daemon=True).start()
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 6) THREAD: READ GPS (NMEA)
+# ──────────────────────────────────────────────────────────────────────────────
+def read_gps():
+    global gps_lat, gps_lon, gps_alt, gps_fix, gps_time_utc, gps_last_update
+    if not gps_ser:
+        return
+    while True:
+        line = gps_ser.readline().decode('ascii', errors='ignore').strip()
+        if not line:
+            time.sleep(0.02)
+            continue
+        data = parse_nmea(line)
+        if not data:
+            continue
+        typ = data['type']
+        if typ == 'GGA':
+            gps_lat = data['lat']
+            gps_lon = data['lon']
+            gps_alt = data['alt']
+            gps_fix = data['fix']
+            gps_last_update = time.time()
+        elif typ == 'RMC':
+            if data['time_utc']:
+                gps_time_utc = data['time_utc']
+                gps_last_update = time.time()
+        time.sleep(0.01)
+
+if gps_ser:
+    threading.Thread(target=read_gps, daemon=True).start()
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 7) MAIN LOOP
 # ──────────────────────────────────────────────────────────────────────────────
 
-print("Starting integrated test (fixed). Ctrl-C to quit.")
+print("Starting integrated_v4.py. Ctrl-C to quit.")
 try:
     while True:
-        # --- 1) Read LiDAR distance (or placeholder) ---
+        now = time.time()
+
+        # A) READ LiDAR
         distance_str = "--.--m"
         if lidar_ser:
-            raw = lidar_ser.readline()
+            latest_line = None
             try:
-                line = raw.decode('ascii', errors='ignore').strip()
-                # Expect something like "12.34m 4.567V 100%"
-                parts = line.replace(" m","m").split()
-                if parts and parts[0].endswith('m'):
-                    distance_str = parts[0]
+                while lidar_ser.in_waiting:
+                    raw = lidar_ser.readline()
+                    text = raw.decode('ascii', errors='ignore').strip()
+                    if text:
+                        latest_line = text
+                if latest_line is None:
+                    raw = lidar_ser.readline()
+                    latest_line = raw.decode('ascii', errors='ignore').strip()
+                match = re.search(r'([+-]?\d+(?:\.\d+)?)\s*m', latest_line.replace(',', '.'))
+                if match:
+                    distance_val = float(match.group(1))
+                    distance_str = f"{distance_val:.2f}m"
             except:
                 pass
 
-        # --- 2) Read IMU tilt (roll & pitch) ---
-        euler = sensor.euler   # (heading, roll, pitch) or (None,None,None)
+        # B) READ IMU tilt
+        euler = sensor.euler
         if euler is None:
-            roll = None
-            pitch = None
+            roll, pitch = None, None
         else:
             _, roll, pitch = euler
 
         if roll is None or pitch is None:
-            # Show placeholders on line 2 of lcd1
             tilt_cells = [
-                " ", " ", chr(0), "x",    # “  ° x”
-                " ",                         # space between x and y
-                " ", " ", chr(0), "y",    # “  ° y”
-                " ", "T", "I", "L", ":", " ", " ", " "
+                " ", " ", chr(0), "x", " ",
+                " ", " ", chr(0), "y",
+                " ", "T", "I", "L", ":", " ", " "
             ]
         else:
             rx = min(int(abs(roll)), 99)
             ry = min(int(abs(pitch)), 99)
-            sx = f"{rx:02d}"   # e.g. "14"
-            sy = f"{ry:02d}"   # e.g. "16"
+            sx = f"{rx:02d}"
+            sy = f"{ry:02d}"
             dir_str = get_tilt_direction(roll, pitch)
             dd = "OK" if dir_str == "OK" else dir_str[:2].ljust(2)
-
-            # Now place a space between “x” and the “y” digits:
             tilt_cells = [
-                sx[0], sx[1], chr(0), "x",  # e.g. “1 4 ° x”
-                " ",                         # explicit space
-                sy[0], sy[1], chr(0), "y",  # “ 1 6 ° y”
-                " ", "T", "I", "L", ":",    # “   T I L :”
-                dd[0], dd[1], " "            # direction + trailing space
+                sx[0], sx[1], chr(0), "x", " ",
+                sy[0], sy[1], chr(0), "y",
+                " ", "T", "I", "L", ":", dd[0], dd[1]
             ]
 
-        # --- 3) Handle Buttons ---
-        curr_save_state   = GPIO.input(SAVE_BUTTON_PIN)
-        curr_delete_state = GPIO.input(DELETE_BUTTON_PIN)
+        # C) HANDLE ARDUINO COMMANDS
+        with arduino_lock:
+            cmd = arduino_command
 
-        # SAVE / CONTINUE button pressed (HIGH→LOW transition)
-        if curr_save_state == GPIO.LOW and prev_save_state == GPIO.HIGH:
-            if not delete_confirm:
-                if not display_freeze:
-                    # === Save current entry to CSV ===
-                    now = datetime.datetime.now()
-                    date_str = now.strftime("%Y-%m-%d")
-                    time_str = now.strftime("%I:%M %p")  # e.g. “12:49 PM”
-                    lat = TEST_LAT
-                    lon = TEST_LON
-                    alt = TEST_ALT
-                    dist_val = distance_str.rstrip('m')
-                    fix = GPS_FIX
+        if cmd == "SAVE_PRESS":
+            with arduino_lock:
+                arduino_command = None
 
-                    with open(CSV_PATH, 'a', newline='') as f:
-                        writer = csv.writer(f)
-                        writer.writerow([date_str, time_str, lat, lon, alt, dist_val, fix])
-                    saved_entries.append([date_str, time_str, lat, lon, alt, dist_val, fix])
+            # Cancel delete prompt if pending
+            if delete_confirm:
+                delete_confirm = False
+                delete_prompt_shown = False
+                lcd1.clear()
 
-                    # Show “Data saved” on lcd1, then freeze
-                    lcd1.clear()
-                    lcd1.write_string("  Data saved    ")
-                    display_freeze = True
+            # FIRST Save: show “Data saved” then freeze
+            elif not display_freeze and not in_history_mode:
+                lcd1.clear()
+                lcd1.write_string("  Data saved    ")
+
+                # Write CSV (include roll/pitch)
+                dt = datetime.datetime.now()
+                date_str = dt.strftime("%Y-%m-%d")
+                # TIME with seconds from GPS if possible, else system
+                if gps_fix and gps_time_utc:
+                    hh, mm, ss = map(int, gps_time_utc.split(':'))
+                    now_utc = datetime.datetime.utcnow().replace(hour=hh, minute=mm, second=ss)
+                    now_local = now_utc.astimezone()
+                    time_str = now_local.strftime("%I:%M:%S %p")
                 else:
-                    # Second press → unfreeze
-                    display_freeze = False
+                    time_str = datetime.datetime.now().strftime("%I:%M:%S %p")
 
-        # DELETE button pressed
-        if curr_delete_state == GPIO.LOW and prev_delete_state == GPIO.HIGH:
-            if not display_freeze:
+                lat  = gps_lat if gps_fix else None
+                lon  = gps_lon if gps_fix else None
+                alt  = gps_alt if gps_fix else None
+                fix  = "Yes" if gps_fix else "No"
+                roll_val  = f"{roll:.1f}"  if roll is not None else ""
+                pitch_val = f"{pitch:.1f}" if pitch is not None else ""
+                dist_val  = distance_str.rstrip('m')
+
+                with open(CSV_PATH, 'a', newline='') as f:
+                    writer = csv.writer(f)
+                    writer.writerow([
+                        date_str, time_str,
+                        f"{lat:.6f}" if lat else "",
+                        f"{lon:.6f}" if lon else "",
+                        f"{alt:.1f}" if alt else "",
+                        dist_val, roll_val, pitch_val, fix
+                    ])
+                saved_entries.insert(0, [
+                    date_str, time_str,
+                    f"{lat:.6f}" if lat else "",
+                    f"{lon:.6f}" if lon else "",
+                    f"{alt:.1f}" if alt else "",
+                    dist_val, roll_val, pitch_val, fix
+                ])
+                if len(saved_entries) > HISTORY_WINDOW:
+                    saved_entries.pop()
+
+                time.sleep(SAVE_MESSAGE_DURATION)
+                display_freeze = True
+
+            # SECOND Save (while frozen): unfreeze
+            elif display_freeze:
+                display_freeze = False
+
+        elif cmd == "DELETE_PRESS":
+            with arduino_lock:
+                arduino_command = None
+
+            # In history: prompt+confirm
+            if in_history_mode:
                 if not delete_confirm:
-                    # Show confirmation prompt
-                    lcd1.clear()
-                    lcd1.write_string("Delete last entry?")
                     delete_confirm = True
-                    delete_prompt_shown = True
+                    lcd2.clear()
+                    lcd2.cursor_pos = (0,0)
+                    lcd2.write_string("Press delete".center(16))
+                    lcd2.cursor_pos = (1,0)
+                    lcd2.write_string("again to delete".center(16))
                 else:
-                    # Confirm deletion
+                    # Perform deletion
                     if saved_entries:
-                        saved_entries.pop()
-                        # Rewrite CSV without last row
+                        saved_entries.pop(history_index)
                         with open(CSV_PATH, 'w', newline='') as f:
                             writer = csv.writer(f)
-                            writer.writerow(['Date','Time','Lat','Lon','Alt','Distance_m','GPS_fix'])
+                            writer.writerow(['Date','Time','Lat','Lon','Alt','Distance_m','Roll','Pitch','GPS_fix'])
                             writer.writerows(saved_entries)
+                    delete_confirm = False
+                    lcd2.clear()
+                    lcd2.cursor_pos = (0,0)
+                    lcd2.write_string(" Entry deleted  ")
+                    time.sleep(DELETE_MESSAGE_DURATION)
+                    lcd2.clear()
+                    # Clamp history_index
+                    history_index = min(history_index, len(saved_entries)-1)
+                    if not saved_entries:
+                        in_history_mode = False
                     lcd1.clear()
-                    lcd1.write_string("  Entry deleted ")
+
+            # Not frozen/history: prompt deletion of most recent
+            elif not display_freeze and not in_history_mode:
+                if not delete_confirm:
+                    delete_confirm = True
+                    delete_prompt_shown = True
+                    lcd2.clear()
+                    lcd2.cursor_pos = (0,0)
+                    lcd2.write_string("Press delete".center(16))
+                    lcd2.cursor_pos = (1,0)
+                    lcd2.write_string("again to delete".center(16))
+                else:
+                    if saved_entries:
+                        saved_entries.pop(0)
+                        with open(CSV_PATH, 'w', newline='') as f:
+                            writer = csv.writer(f)
+                            writer.writerow(['Date','Time','Lat','Lon','Alt','Distance_m','Roll','Pitch','GPS_fix'])
+                            writer.writerows(saved_entries)
                     delete_confirm = False
                     delete_prompt_shown = False
+                    lcd2.clear()
+                    lcd2.cursor_pos = (0,0)
+                    lcd2.write_string(" Entry deleted  ")
+                    time.sleep(DELETE_MESSAGE_DURATION)
+                    lcd2.clear()
 
-        prev_save_state   = curr_save_state
-        prev_delete_state = curr_delete_state
+        elif cmd == "HISTORY":
+            with arduino_lock:
+                arduino_command = None
+            if not in_history_mode and not display_freeze:
+                in_history_mode = True
+                history_index = 0
+                lcd1.clear()
+                lcd1.cursor_pos = (0,0)
+                lcd1.write_string(" History Mode    ")
+                time.sleep(0.5)
+                lcd1.clear()
+            elif in_history_mode:
+                in_history_mode = False
+                lcd1.clear()
 
-        # If freeze or delete‐prompt, skip normal updates but still update lcd2:
-        if display_freeze or delete_prompt_shown:
-            # Always update LCD #2 with test GPS/time/alt so it doesn't go blank:
-            now = datetime.datetime.now()
-            time_str = now.strftime("%I:%M %p")
-            lcd2.cursor_pos = (0, 0)
-            row0 = f"{TEST_LAT} {time_str}"
-            lcd2.write_string(row0.ljust(16)[:16])
-            lcd2.cursor_pos = (1, 0)
-            row1 = f"{TEST_LON} AL:{TEST_ALT}"
-            lcd2.write_string(row1.ljust(16)[:16])
+        elif cmd == "UP":
+            with arduino_lock:
+                arduino_command = None
+            if in_history_mode and (history_index + 1) < len(saved_entries):
+                history_index += 1
+                lcd1.clear()
 
+        elif cmd == "DOWN":
+            with arduino_lock:
+                arduino_command = None
+            if in_history_mode and history_index > 0:
+                history_index -= 1
+                lcd1.clear()
+
+        # D) HISTORY MODE DISPLAY
+        if in_history_mode:
+            if saved_entries:
+                ent = saved_entries[history_index]
+                # ent = [date, time, lat, lon, alt, dist, roll, pitch, fix]
+                # Top row: show time with seconds + distance
+                time_str = ent[1]        # “HH:MM:SS PM”
+                dist_ent = ent[5]        # e.g. “123.45”
+                lcd1.cursor_pos = (0,0)
+                lcd1.write_string(time_str.ljust(16)[:16])
+                lcd1.cursor_pos = (1,0)
+                lcd1.write_string(f"{dist_ent}m".ljust(16)[:16])
+                # LCD #2 shows the static text “History (press history to exit)”
+                lcd2.clear()
+                lcd2.cursor_pos = (0,0)
+                lcd2.write_string("History (press".ljust(16)[:16])
+                lcd2.cursor_pos = (1,0)
+                lcd2.write_string("history to exit)".ljust(16)[:16])
+            else:
+                lcd1.cursor_pos = (0,0)
+                lcd1.write_string("No history       ")
+                lcd1.cursor_pos = (1,0)
+                lcd1.write_string(" entries         ")
+                lcd2.clear()
             time.sleep(0.05)
             continue
 
-        # --- 4) Normal Display Update ---
+        # E) FREEZE OR DELETE-PROMPT LOGIC
+        if display_freeze or delete_prompt_shown:
+            # LCD #1 remains at last live measurement (no overwrite here)
 
-        # LCD #1 – Top row: “Dist:xxx.xxm”
-        lcd1.cursor_pos = (0, 0)
-        dist_display = f"Dist:{distance_str}"
-        lcd1.write_string(dist_display.ljust(16)[:16])
+            # LCD #2 for Save-freeze: show only “Continue?”; for delete prompt, do nothing (already shown)
+            if display_freeze:
+                lcd2.clear()
+                lcd2.cursor_pos = (0,0)
+                lcd2.write_string("Continue?".center(16))
+                lcd2.cursor_pos = (1,0)
+                lcd2.write_string("".center(16))
+            # If delete_prompt_shown, we already displayed the prompt above. Just wait.
+            time.sleep(0.05)
+            continue
 
-        # LCD #1 – Bottom row: tilt_cells (16 chars)
-        lcd1.cursor_pos = (1, 0)
+        # F) NORMAL LIVE DISPLAY
+
+        # F1) LCD #1 – Top: “Dist:xxx.xxm”
+        lcd1.cursor_pos = (0,0)
+        lcd1.write_string(f"Dist:{distance_str}".ljust(16)[:16])
+
+        # F2) LCD #1 – Bottom: tilt_cells
+        lcd1.cursor_pos = (1,0)
         lcd1.write_string("".join(tilt_cells))
 
-        # LCD #2 – always update:
-        now = datetime.datetime.now()
-        time_str = now.strftime("%I:%M %p")
-        lcd2.cursor_pos = (0, 0)
-        row0 = f"{TEST_LAT} {time_str}"
-        lcd2.write_string(row0.ljust(16)[:16])
+        # F3) LCD #2 – GPS/time/ALT
+        lcd2.cursor_pos = (0,0)
+        if (time.time() - gps_last_update) > 2.0 or not gps_fix:
+            lcd2.write_string("No GPS Signal   ")
+            lcd2.cursor_pos = (1,0)
+            lcd2.write_string("AL:------       ")
+        else:
+            # Use GPS time if possible
+            if gps_fix and gps_time_utc:
+                hh, mm, ss = map(int, gps_time_utc.split(':'))
+                now_utc = datetime.datetime.utcnow().replace(hour=hh, minute=mm, second=ss)
+                now_local = now_utc.astimezone()
+                time_str = now_local.strftime("%I:%M:%S %p")
+            else:
+                time_str = datetime.datetime.now().strftime("%I:%M:%S %p")
 
-        lcd2.cursor_pos = (1, 0)
-        row1 = f"{TEST_LON} AL:{TEST_ALT}"
-        lcd2.write_string(row1.ljust(16)[:16])
+            lat_fmt = f"{gps_lat:.3f}"
+            field0 = lat_fmt.ljust(7)    # cols 0–6
+            field1 = time_str.rjust(8)   # cols 8–15
+            lcd2.write_string(field0 + field1)
 
-        # LEDs & Buzzer:
+            lcd2.cursor_pos = (1,0)
+            lon_fmt = f"{gps_lon:.3f}"
+            field0 = lon_fmt.ljust(7)
+            alt_fmt = f"AL:{gps_alt:.1f}"
+            field1 = alt_fmt.rjust(8)
+            lcd2.write_string(field0 + field1)
+
+        # F4) LEDs & buzzer
         if roll is not None and pitch is not None and abs(roll) <= THRESHOLD_DEG and abs(pitch) <= THRESHOLD_DEG:
             GPIO.output(GREEN_LED_PIN, GPIO.HIGH)
             GPIO.output(RED_LED_PIN,   GPIO.LOW)
-            GPIO.output(BUZZER_PIN,    GPIO.LOW)
+            buzzer_pwm.stop()
         else:
             GPIO.output(GREEN_LED_PIN, GPIO.LOW)
             GPIO.output(RED_LED_PIN,   GPIO.HIGH)
-            GPIO.output(BUZZER_PIN,    GPIO.HIGH)  # Active buzzer on
+            try:
+                buzzer_pwm.start(50)
+            except:
+                pass
 
-        # Tiny delay to let CPU breathe; LiDAR now updates quickly
         time.sleep(0.01)
 
 except KeyboardInterrupt:
@@ -329,8 +590,12 @@ finally:
     lcd2.clear()
     GPIO.output(GREEN_LED_PIN, GPIO.LOW)
     GPIO.output(RED_LED_PIN,   GPIO.LOW)
-    GPIO.output(BUZZER_PIN,    GPIO.LOW)
+    buzzer_pwm.stop()
     GPIO.cleanup()
     if lidar_ser:
         lidar_ser.close()
+    if gps_ser:
+        gps_ser.close()
+    if arduino_ser:
+        arduino_ser.close()
     print("\nExiting cleanly.")
