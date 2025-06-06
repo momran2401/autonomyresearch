@@ -353,7 +353,8 @@ try:
             elif not display_freeze and not in_history_mode:
                 lcd1.clear()
                 lcd1.write_string("  Data saved    ")
-
+                freeze_line1 = f"Dist:{distance_str}".ljust(16)[:16]
+                freeze_line2 = "(hold)".center(16)
                 # Write CSV (include roll/pitch)
                 dt = datetime.datetime.now()
                 date_str = dt.strftime("%Y-%m-%d")
@@ -393,7 +394,15 @@ try:
                 if len(saved_entries) > HISTORY_WINDOW:
                     saved_entries.pop()
 
+                # Briefly show confirmation then restore last measured
+                # data so the user sees what was saved while the display
+                # is frozen.
                 time.sleep(SAVE_MESSAGE_DURATION)
+                lcd1.clear()
+                lcd1.cursor_pos = (0,0)
+                lcd1.write_string(freeze_line1)
+                lcd1.cursor_pos = (1,0)
+                lcd1.write_string(freeze_line2)
                 display_freeze = True
 
             # SECOND Save (while frozen): unfreeze
@@ -409,10 +418,10 @@ try:
                 if not delete_confirm:
                     delete_confirm = True
                     lcd2.clear()
-                    lcd2.cursor_pos = (0,0)
-                    lcd2.write_string("Press delete".center(16))
+                    lcd2.cursor_pos = (0,2)
+                    lcd2.write_string("u sure bro?")
                     lcd2.cursor_pos = (1,0)
-                    lcd2.write_string("again to delete".center(16))
+                    lcd2.write_string("hist:exi del:del")
                 else:
                     # Perform deletion
                     if saved_entries:
@@ -464,6 +473,7 @@ try:
             if not in_history_mode and not display_freeze:
                 in_history_mode = True
                 history_index = 0
+                delete_confirm = False
                 lcd1.clear()
                 lcd1.cursor_pos = (0,0)
                 lcd1.write_string(" History Mode    ")
@@ -471,24 +481,35 @@ try:
                 lcd1.clear()
             elif in_history_mode:
                 in_history_mode = False
+                delete_confirm = False
                 lcd1.clear()
 
         elif cmd == "UP":
             with arduino_lock:
                 arduino_command = None
-            if in_history_mode and (history_index + 1) < len(saved_entries):
-                history_index += 1
-                lcd1.clear()
+            if in_history_mode:
+                if delete_confirm:
+                    delete_confirm = False
+                elif (history_index + 1) < len(saved_entries):
+                    history_index += 1
+                    lcd1.clear()
 
         elif cmd == "DOWN":
             with arduino_lock:
                 arduino_command = None
-            if in_history_mode and history_index > 0:
-                history_index -= 1
-                lcd1.clear()
+            if in_history_mode:
+                if delete_confirm:
+                    delete_confirm = False
+                elif history_index > 0:
+                    history_index -= 1
+                    lcd1.clear()
 
         # D) HISTORY MODE DISPLAY
         if in_history_mode:
+            if delete_confirm:
+                # Leave the confirmation prompt visible
+                time.sleep(0.05)
+                continue
             if saved_entries:
                 ent = saved_entries[history_index]
                 # ent = [date, time, lat, lon, alt, dist, roll, pitch, fix]
