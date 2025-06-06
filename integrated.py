@@ -133,57 +133,14 @@ GPIO.output(RED_LED_PIN,   GPIO.LOW)
 # PWM for buzzer at 1 kHz
 buzzer_pwm = GPIO.PWM(BUZZER_PIN, 1000)
 
-# LCD #1
-lcd1 = CharLCD(
-    pin_rs=LCD1_PINS['pin_rs'],
-    pin_rw=LCD1_PINS['pin_rw'],
-    pin_e=LCD1_PINS['pin_e'],
-    pins_data=LCD1_PINS['pins_data'],
-    numbering_mode=GPIO.BCM,
-    cols=16, rows=2,
-    auto_linebreaks=False
-)
-lcd1.clear()
-
-# LCD #2
-lcd2 = CharLCD(
-    pin_rs=LCD2_PINS['pin_rs'],
-    pin_rw=LCD2_PINS['pin_rw'],
-    pin_e=LCD2_PINS['pin_e'],
-    pins_data=LCD2_PINS['pins_data'],
-    numbering_mode=GPIO.BCM,
-    cols=16, rows=2,
-    auto_linebreaks=False
-)
-lcd2.clear()
-
-# IMU (BNO055)
-i2c = busio.I2C(board.SCL, board.SDA)
-sensor = adafruit_bno055.BNO055_I2C(i2c)
-
-# LiDAR
-try:
-    lidar_ser = serial.Serial(LIDAR_PORT, LIDAR_BAUD, timeout=0.1)
-    time.sleep(0.5)
-    lidar_ser.reset_input_buffer()
-except:
-    lidar_ser = None
-
-# GPS
-try:
-    gps_ser = serial.Serial(GPS_PORT, GPS_BAUD, timeout=0.1)
-    time.sleep(0.5)
-    gps_ser.reset_input_buffer()
-except:
-    gps_ser = None
-
-# Arduino Nano
-try:
-    arduino_ser = serial.Serial(ARDUINO_PORT, ARDUINO_BAUD, timeout=0.1)
-    time.sleep(0.5)
-    arduino_ser.reset_input_buffer()
-except:
-    arduino_ser = None
+# Device handles (initialized in startup checks)
+lcd1 = None
+lcd2 = None
+i2c = None
+sensor = None
+lidar_ser = None
+gps_ser = None
+arduino_ser = None
 
 # Ensure CSV exists
 if not os.path.isfile(CSV_PATH):
@@ -204,7 +161,161 @@ deg_bitmap = [
     0b00000,
     0b00000
 ]
-lcd1.create_char(0, bytearray(deg_bitmap))
+
+
+
+
+# ─────────────────────────────────────────────────────────────────────────────-
+# Startup checks with animated progress
+# ─────────────────────────────────────────────────────────────────────────────-
+
+lcd1_ok = False
+lcd2_ok = False
+gps_ok = False
+nano_ok = False
+lidar_ok = False
+imu_ok = False
+
+
+def animate_checks(stop_event):
+    msgs = ["Running checks.", "Running checks..", "Running checks..."]
+    idx = 0
+    while not stop_event.is_set():
+        msg = msgs[idx % len(msgs)]
+        if lcd1:
+            lcd1.clear()
+            lcd1.write_string(msg.ljust(16)[:16])
+        if lcd2:
+            lcd2.clear()
+            lcd2.write_string(msg.ljust(16)[:16])
+        idx += 1
+        time.sleep(0.5)
+
+
+def startup_checks():
+    global lcd1, lcd2, i2c, sensor, lidar_ser, gps_ser, arduino_ser
+    global lcd1_ok, lcd2_ok, gps_ok, nano_ok, lidar_ok, imu_ok
+
+    errors = []
+
+    # LCD #1
+    try:
+        lcd1 = CharLCD(
+            pin_rs=LCD1_PINS['pin_rs'],
+            pin_rw=LCD1_PINS['pin_rw'],
+            pin_e=LCD1_PINS['pin_e'],
+            pins_data=LCD1_PINS['pins_data'],
+            numbering_mode=GPIO.BCM,
+            cols=16,
+            rows=2,
+            auto_linebreaks=False,
+        )
+        lcd1.clear()
+        lcd1_ok = True
+    except Exception:
+        lcd1 = None
+        errors.append("LCD1 failed")
+
+    # LCD #2
+    try:
+        lcd2 = CharLCD(
+            pin_rs=LCD2_PINS['pin_rs'],
+            pin_rw=LCD2_PINS['pin_rw'],
+            pin_e=LCD2_PINS['pin_e'],
+            pins_data=LCD2_PINS['pins_data'],
+            numbering_mode=GPIO.BCM,
+            cols=16,
+            rows=2,
+            auto_linebreaks=False,
+        )
+        lcd2.clear()
+        lcd2_ok = True
+    except Exception:
+        lcd2 = None
+        errors.append("LCD2 failed")
+
+    stop_evt = threading.Event()
+    if lcd1 or lcd2:
+        threading.Thread(target=animate_checks, args=(stop_evt,), daemon=True).start()
+
+    # GPS
+    try:
+        gps_ser = serial.Serial(GPS_PORT, GPS_BAUD, timeout=0.1)
+        time.sleep(0.5)
+        gps_ser.reset_input_buffer()
+        gps_ok = True
+    except Exception:
+        gps_ser = None
+        errors.append("GPS failure")
+
+    # Nano
+    try:
+        arduino_ser = serial.Serial(ARDUINO_PORT, ARDUINO_BAUD, timeout=0.1)
+        time.sleep(0.5)
+        arduino_ser.reset_input_buffer()
+        nano_ok = True
+    except Exception:
+        arduino_ser = None
+        errors.append("Nano failure")
+
+    # LiDAR
+    try:
+        lidar_ser = serial.Serial(LIDAR_PORT, LIDAR_BAUD, timeout=0.1)
+        time.sleep(0.5)
+        lidar_ser.reset_input_buffer()
+        lidar_ok = True
+    except Exception:
+        lidar_ser = None
+        errors.append("LiDAR failure")
+
+    # IMU
+    try:
+        i2c = busio.I2C(board.SCL, board.SDA)
+        sensor = adafruit_bno055.BNO055_I2C(i2c)
+        _ = sensor.euler
+        imu_ok = True
+    except Exception:
+        sensor = None
+        errors.append("IMU failure")
+
+    stop_evt.set()
+    time.sleep(0.1)
+
+    if lcd1:
+        lcd1.clear()
+        lcd1.write_string("Checks complete".center(16))
+    if lcd2:
+        lcd2.clear()
+        lcd2.write_string("Checks complete".center(16))
+    time.sleep(1)
+
+    if lcd1:
+        lcd1.clear()
+        if not errors:
+            lcd1.write_string("All systems OK".center(16))
+            time.sleep(1.5)
+        else:
+            lcd1.write_string(f"{len(errors)} errors found".ljust(16)[:16])
+            for err in errors:
+                lcd1.cursor_pos = (1, 0)
+                lcd1.write_string(err.ljust(16)[:16])
+                time.sleep(1.5)
+
+    elif lcd2:
+        lcd2.clear()
+        if not errors:
+            lcd2.write_string("All systems OK".center(16))
+            time.sleep(1.5)
+        else:
+            lcd2.write_string(f"{len(errors)} errors found".ljust(16)[:16])
+            for err in errors:
+                lcd2.cursor_pos = (1, 0)
+                lcd2.write_string(err.ljust(16)[:16])
+                time.sleep(1.5)
+
+startup_checks()
+if lcd1:
+    lcd1.create_char(0, bytearray(deg_bitmap))
 
 # State variables
 in_history_mode     = False
