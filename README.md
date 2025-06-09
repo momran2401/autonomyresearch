@@ -1,202 +1,222 @@
-Mobile LiDAR Data Logger
+# Mobile LiDAR Data Logger
 
-© 2025 Mustafa Omran. All rights reserved.
+**© 2025 Mustafa Omran. All rights reserved.**
 
-This project is a fully integrated field data‑logging and feedback system running on a Raspberry Pi. It interfaces with a LiDAR distance sensor, IMU (BNO055), GPS receiver, and an Arduino Nano to offer real‑time measurement display, data storage, and user controls via buttons, joystick, LEDs, buzzer, and dual LCD screens.
+A Raspberry Pi 3B–based field data logger integrating LiDAR, IMU, GPS, and user controls via an Arduino Nano. Provides real-time feedback, data logging, and history browsing.
 
-Features
+---
 
-Real‑time display of distance, tilt (roll & pitch), GPS coordinates, altitude, and time on two 16×2 LCDs
+## Features
 
-Visual & audible feedback: green/red LEDs and buzzer indicate level vs. tilt
+* **Real-time display** on two 16×2 LCDs:
 
-Data logging: save readings (date, time, latitude, longitude, altitude, distance, roll, pitch, GPS fix) to CSV
+  * Distance (LiDAR)
+  * Tilt: roll & pitch (IMU)
+  * Latitude / longitude, altitude, timestamp (GPS)
+* **Visual & audible feedback**:
 
-History browser: scroll through, review, and delete past entries
+  * Green/red LEDs
+  * PWM buzzer
+* **Data logging** to CSV:
 
-Shutdown: hold joystick fully left/right for 3 s to power off (cancelable)
+  ```csv
+  Date,Time,Lat,Lon,Alt,Distance_m,Roll,Pitch,GPS_fix
+  ```
+* **History mode** (up to 100 entries): scroll, review, delete
+* **Shutdown** via joystick hold (3 s) with cancel
+* **Startup hardware checks** with animated status and error reporting
 
-Startup hardware checks with animated progress and error reporting
+---
 
-Hardware Requirements & Wiring Summary
+## Wiring Summary (BCM / Nano)
 
-All pin references use BCM numbering on the Raspberry Pi 3 B. Arduino pins use Nano labeling.
+### LCD #1 (LiDAR + Tilt)
 
-1. LCD #1 (LiDAR + Tilt)
+| Pin | BCM           | Function                 |
+| --- | ------------- | ------------------------ |
+| VSS | GND           | Ground                   |
+| VDD | 5 V           | Power                    |
+| V0  | Pot →GND/5 V  | Contrast                 |
+| RS  | 26            | Register Select          |
+| RW  | GND           | Read/Write (GND = write) |
+| E   | 19            | Enable                   |
+| D4  | 13            | Data 4                   |
+| D5  | 6             | Data 5                   |
+| D6  | 5             | Data 6                   |
+| D7  | 11            | Data 7                   |
+| A   | 5 V via 220 Ω | Backlight +              |
+| K   | GND           | Backlight –              |
 
-VSS → GND
-VDD → 5 V
-V0  → wiper of 10 KΩ pot (ends to 5 V & GND)
-RS  → BCM 26
-RW  → GND
-E   → BCM 19
-D4  → BCM 13
-D5  → BCM 6
-D6  → BCM 5
-D7  → BCM 11
-A   → 5 V via 220 Ω resistor
-K   → GND
+### LCD #2 (GPS/Time/Alt + Prompts)
 
-2. LCD #2 (GPS/Time/Alt + Prompts)
+| Pin | BCM           | Function        |
+| --- | ------------- | --------------- |
+| VSS | GND           | Ground          |
+| VDD | 5 V           | Power           |
+| V0  | Pot           | Contrast        |
+| RS  | 21            | Register Select |
+| RW  | GND           | Read/Write      |
+| E   | 20            | Enable          |
+| D4  | 16            | Data 4          |
+| D5  | 12            | Data 5          |
+| D6  | 7             | Data 6          |
+| D7  | 8             | Data 7          |
+| A   | 5 V via 220 Ω | Backlight +     |
+| K   | GND           | Backlight –     |
 
-VSS → GND
-VDD → 5 V
-V0  → wiper of 10 KΩ pot
-RS  → BCM 21
-RW  → GND
-E   → BCM 20
-D4  → BCM 16
-D5  → BCM 12
-D6  → BCM 7
-D7  → BCM 8
-A   → 5 V via 220 Ω resistor
-K   → GND
+### LEDs & Buzzer
 
-3. LEDs & Buzzer
+| Device    | Pin    | Details            |
+| --------- | ------ | ------------------ |
+| Green LED | BCM 4  | via 330 Ω → GND    |
+| Red LED   | BCM 18 | via 330 Ω → GND    |
+| Buzzer    | BCM 25 | PWM @1 kHz to beep |
 
-Green LED (+) → BCM 4 via 330 Ω → LED (–) → GND
-Red   LED (+) → BCM 18 via 330 Ω → LED (–) → GND
-Buzzer (+)    → BCM 25 → Buzzer (–) → GND
+### IMU (BNO055, I²C)
 
-4. IMU (BNO055 over I2C)
+| Pin | BCM   | Function  |
+| --- | ----- | --------- |
+| VIN | 3.3 V | Power     |
+| GND | GND   | Ground    |
+| SDA | 2     | I²C Data  |
+| SCL | 3     | I²C Clock |
 
-VIN → 3.3 V
-GND → GND
-SDA → BCM 2 (pin 3)
-SCL → BCM 3 (pin 5)
+### GPS (Adafruit Ultimate v3, UART)
 
-5. GPS (Adafruit Ultimate v3 via UART)
+| Pin | BCM | Function     |
+| --- | --- | ------------ |
+| VIN | 5 V | Power        |
+| GND | GND | Ground       |
+| TX  | 15  | Pi RX (UART) |
+| RX  | —   | (Unused)     |
 
-VIN → 5 V
-GND → GND
-TX  → BCM 15 (UART RX)
-RX  → (leave unconnected)
+### Arduino Nano & Joystick
 
-6. Arduino Nano (Buttons & Joystick)
+| Function              | Nano Pin | Notes                               |
+| --------------------- | -------- | ----------------------------------- |
+| Save / Continue       | D2       | Button (active LOW)                 |
+| Delete Entry          | D3       | Button (active LOW)                 |
+| History Toggle        | D4       | Joystick SW (active LOW)            |
+| Joystick X (shutdown) | A0       | ADC <400/< >600 hold for shutdown   |
+| Joystick Y (nav)      | A1       | ADC <400=UP, >600=DOWN              |
+| 5 V                   | 5 V      | Joystick VCC                        |
+| GND                   | GND      | Joystick ground                     |
+| USB Serial            | USB      | To Pi (/dev/ttyACM0 at 115200 baud) |
 
-D2  → Save/Continue button (active LOW)
-D3  → Delete last entry button (active LOW)
-D4  → Joystick button (“History”, active LOW)
-A0  → Joystick X (shutdown when held left/right)
-A1  → Joystick Y (UP/DOWN navigation)
-5 V → Joystick VCC
-GND → Joystick GND
-USB → Pi USB port (for serial comm at 115200 baud)
+### LiDAR (SF11/C)
 
-7. LiDAR (SF11/C)
+| Interface | Details                           |
+| --------- | --------------------------------- |
+| USB       | Micro-B → Pi USB-A (/dev/ttyUSB0) |
 
-USB micro‑B → Pi USB‑A port (/dev/ttyUSB0)
+---
 
-Software Installation
+## Software Installation
 
-Install system packages:
-
+```bash
 sudo apt update
 sudo apt install python3-venv python3-pip i2c-tools
-
-Create & activate Python venv:
-
 python3 -m venv ~/imu-env
 source ~/imu-env/bin/activate
-
-Install Python deps:
-
 pip install RPLCD pyserial adafruit-blinka adafruit-circuitpython-bno055 RPi.GPIO
+sudo raspi-config   # enable I2C & UART
+```
 
-Enable I2C & serial:
+Clone and prepare repo:
 
-sudo raspi-config
-# Interfacing Options → I2C → Enable
-# Interfacing Options → Serial → disable login shell, enable serial port
+```bash
+git clone https://github.com/yourusername/lidar-logger.git
+cd lidar-logger
+chmod +x integratedv12.py
+```
 
-Running the Application
+---
 
-Manual Launch
+## Running the App
 
+**Manual**:
+
+```bash
 source ~/imu-env/bin/activate
-python ~/integratedv12.py
+python integratedv12.py
+```
 
-Automatic on Boot (systemd)
+**Auto‑start on Boot (systemd)**:
 
-Service file /etc/systemd/system/lidar.service:
+1. Create `/etc/systemd/system/lidar.service`:
 
-[Unit]
-Description=Mobile LiDAR Unit
-After=network.target
+   ```ini
+   [Unit]
+   Description=Mobile LiDAR Unit
+   After=network.target
 
-[Service]
-User=mustafaomran
-WorkingDirectory=/home/mustafaomran
-ExecStart=/home/mustafaomran/imu-env/bin/python3 /home/mustafaomran/integratedv12.py
-Restart=always
-Environment=PYTHONUNBUFFERED=1
+   [Service]
+   User=mustafaomran
+   WorkingDirectory=/home/mustafaomran/lidar-logger
+   ExecStart=/home/mustafaomran/imu-env/bin/python3 /home/mustafaomran/lidar-logger/integratedv12.py
+   Restart=always
+   Environment=PYTHONUNBUFFERED=1
 
-[Install]
-WantedBy=multi-user.target
+   [Install]
+   WantedBy=multi-user.target
+   ```
+2. Enable & start:
 
-Enable & start:
+   ```bash
+   sudo systemctl daemon-reload
+   sudo systemctl enable lidar.service
+   sudo systemctl start lidar.service
+   sudo journalctl -u lidar.service -f
+   ```
 
-sudo systemctl daemon-reload
-sudo systemctl enable lidar.service
-sudo systemctl start lidar.service
-sudo journalctl -u lidar.service -f
+---
 
-User Controls (Arduino Commands)
+## User Controls (Serial Commands)
 
-Command
+| Command             | Trigger                         | Effect                               |
+| ------------------- | ------------------------------- | ------------------------------------ |
+| **SAVE\_PRESS**     | D2 button press                 | Save reading → “Data saved” → freeze |
+| **DELETE\_PRESS**   | D3 button press                 | Prompt & confirm deletion            |
+| **HISTORY**         | Joystick SW (D4) press          | Toggle history mode                  |
+| **UP**              | Joystick pushed up (A1 < 400)   | Scroll older history                 |
+| **DOWN**            | Joystick pushed down (A1 > 600) | Scroll newer history                 |
+| **SHUTDOWN\_PRESS** | Hold joystick X left/right 3 s  | Countdown & shutdown                 |
 
-Trigger
+---
 
-Effect
+## Data Logging Format
 
-SAVE_PRESS
+* **File**: `~/lidar_data.csv`
+* **Columns**:
 
-Press Save button (D2)
+  ```csv
+  Date,Time,Lat,Lon,Alt,Distance_m,Roll,Pitch,GPS_fix
+  ```
+* **In‑memory history**: last 100 entries (browsable)
 
-Save entry, show “Data saved” → freeze display
+---
 
-DELETE_PRESS
+## Troubleshooting & Health Checks
 
-Press Delete button (D3)
+* **Startup checks**: animated “Running checks…” + error report
+* **Runtime**:
 
-Prompt & confirm deletion (in live/history modes)
+  * GPS no data (>10 s): “GPS no data – Check antenna”
+  * No IMU: “IMU disconnected”
+  * No LiDAR: “LiDAR missing”
+  * Joystick/Nano no input (>5 s): “Joystick Missing”
+* **Logs**: `sudo journalctl -u lidar.service -f`
 
-HISTORY
+---
 
-Press Joystick button (D4)
+## License & Ownership Notice
 
-Toggle history browsing mode
+**© 2025 Mustafa Omran. All rights reserved.**
 
-UP
+This code, schematics, and documentation are proprietary. **Unauthorized copying, distribution, or commercial use is prohibited without written consent.**
 
-Joystick up (A1 < 400)
+Contact: [momran2401@gmail.com](mailto:momran2401@gmail.com)
 
-Scroll older entries in history
+---
 
-DOWN
-
-Joystick down (A1 > 600)
-
-Scroll newer entries in history
-
-SHUTDOWN_PRESS
-
-Hold joystick X left/right (A0<400/>600) 3 s
-
-Countdown & power off (cancelable)
-
-Data Logging
-
-CSV file: ~/lidar_data.csv with columns:
-
-Date,Time,Lat,Lon,Alt,Distance_m,Roll,Pitch,GPS_fix
-
-History buffer: keeps last HISTORY_WINDOW entries in memory
-
-README & License Notice
-
-This repository and its contents (code, schematics, documentation) are © 2025 Mustafa Omran. All rights reserved.
-
-No portion of this project may be used, copied, distributed, or incorporated into any product — commercial or otherwise — without the prior written permission of the author.
-
-Contact: mustafaomran@example.com
+*End of README*
