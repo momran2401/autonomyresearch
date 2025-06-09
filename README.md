@@ -209,11 +209,20 @@ python integratedv12.py
 
 ---
 
-## License & Ownership Notice
+## Copyright Notice
 
-**© 2025 Mustafa Omran. All rights reserved.**
+**Copyright © 2025 Mustafa Omran**
 
-This code, schematics, and documentation are proprietary. **Unauthorized copying, distribution, or commercial use is prohibited without written consent.**
+This project — *in whole or in part* — including but not limited to all **source code**, **scripts**, **logic**, **wiring diagrams**, **system architecture**, **hardware-software integration**, **feature concepts**, and **written documentation** (collectively, **"the Work"**) — is the sole intellectual property of **Mustafa Omran**.
+
+Unauthorized use, reproduction, modification, sublicensing, or distribution of any portion of this Work is **strictly prohibited** without the **express written consent** of the copyright holder. This includes attempts to:
+- Repurpose the design or codebase in any derivative or competing product.  
+- Reproduce or reuse any part of the wiring, hardware configuration, or feature logic.  
+- Incorporate this Work — *in part or in full* — into a separate project, publication, or system (academic, commercial, or governmental) without proper **attribution** and **authorization**.
+
+**Note:** Public availability of this Work — including through platforms like GitHub — does **not** constitute a waiver of rights or permission for derivative use.
+
+All rights are **explicitly reserved** to the creator, regardless of employment status, contractual obligations, or employer assumptions. This declaration is reinforced by timestamped authorship in GitHub commit history, File creation and modification records, Clear authorship attribution in project metadata. The author reserves the right to pursue **legal action** in the event of **misappropriation**, **unauthorized replication**, or **unlicensed commercial use** of the Work. Third-party components (e.g. physical casings or enclosures) are **not** covered by this claim unless explicitly stated.
 
 Contact: [momran2401@gmail.com](mailto:momran2401@gmail.com)
 
