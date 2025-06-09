@@ -372,7 +372,7 @@ def read_arduino():
         if not line:
             time.sleep(0.02)
             continue
-        if line in ("SAVE_PRESS", "DELETE_PRESS", "HISTORY", "UP", "DOWN"):
+        if line in ("SAVE_PRESS", "DELETE_PRESS", "HISTORY", "UP", "DOWN", "SHUTDOWN_PRESS"):
             with arduino_lock:
                 if line != arduino_command:
                     arduino_command = line
@@ -416,8 +416,7 @@ if gps_ser:
 # ──────────────────────────────────────────────────────────────────────────────
 # 7) MAIN LOOP
 # ──────────────────────────────────────────────────────────────────────────────
-
-print("Starting integrated_v4.py. Ctrl-C to quit.")
+print("Starting integrated_v12.py. Ctrl-C to quit.")
 try:
     while True:
         now = time.time()
@@ -653,6 +652,30 @@ try:
                     history_index -= 1
                     lcd1.clear()
 
+        elif cmd == "SHUTDOWN_PRESS":
+            with arduino_lock:
+                arduino_command = None
+
+            cancel = False
+            for sec in (3, 2, 1):
+                msg = f"Shutting Down..."
+                lcd1.clear(); lcd1.write_string(msg.center(16))
+                lcd2.clear(); lcd2.write_string(msg.center(16))
+
+                t0 = time.time()
+                while time.time() -t0 < 1:
+                    with arduino_lock:
+                        if arduino_command:
+                            cancel = True
+                            arduino_command = None
+                            break
+                    time.sleep(0.01)
+                if cancel:
+                    lcd1.clear(); lcd2.clear()
+                    break
+                if not cancel:
+                    os.system("sudo shutdown now")
+                    
         # D) HISTORY MODE DISPLAY
         if in_history_mode:
             if delete_confirm:
