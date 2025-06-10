@@ -222,10 +222,7 @@ Unauthorized use, reproduction, modification, sublicensing, or distribution of a
 
 **Note:** Public availability of this Work — including through platforms like GitHub — does **not** constitute a waiver of rights or permission for derivative use.
 
-All rights are **explicitly reserved** to the creator, regardless of employment status, contractual obligations, or employer assumptions. This declaration is reinforced by timestamped authorship in GitHub commit history, File creation and modification records, Clear authorship attribution in project metadata. The author reserves the right to pursue **legal action** in the event of **misappropriation**, **unauthorized replication**, or **unlicensed commercial use** of the Work. Third-party components (e.g. physical casings or enclosures) are **not** covered by this claim unless explicitly stated.
+All rights are **explicitly reserved** to the creator, regardless of employment status, contractual obligations, or employer assumptions. This declaration is reinforced by timestamped authorship in GitHub commit history, File creation and modification records, clear authorship attribution in project metadata. The author reserves the right to pursue legal action in the event of misappropriation, unauthorized replication, or unlicensed commercial use of the Work. Third-party components (e.g. physical casings or enclosures) are **not** covered by this claim unless explicitly stated.
 
 Contact: [momran2401@gmail.com](mailto:momran2401@gmail.com)
 
----
-
-*End of README*
