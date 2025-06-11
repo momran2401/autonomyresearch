@@ -2,7 +2,34 @@
 
 **© 2025 Mustafa Omran. All rights reserved.**
 
-A Raspberry Pi 3B–based field data logger integrating LiDAR, IMU, GPS, and user controls via an Arduino Nano. Provides real-time feedback, data logging, and history browsing.
+This is a Raspberry Pi based field data logger integrating LiDAR, IMU, GPS, and user controls via an Arduino Nano. Provides real-time feedback, data logging, and history browsing.
+A portable, self‑leveling LiDAR measurement platform built on a Raspberry Pi 3 Model B, engineered to deliver precise distance readings, real‑time geo‑referenced positional data, and robust data management in field environments. The system integrates:
+
+- SF11/C Time‑of‑Flight LiDAR Sensor: ultra‑compact rangefinder for accurate distance measurement up to 50 m.
+
+- BNO055 9‑DOF IMU: continuous roll and pitch monitoring with active tilt compensation via a 4° threshold.
+
+- Adafruit Ultimate GPS V3: real‑time latitude, longitude, altitude, and UTC time acquisition.
+
+- Dual HD44780 16×2 LCDs: one for live distance and leveling status; the other for geo‑coordinates and prompts.
+
+- Arduino Nano Interface: dual push‑buttons (Save/Delete), spring‑return joystick (History navigation, UP/DOWN scrolling, 3 s shutdown), all communicated over USB serial.
+
+- Visual & Audible Indicators: green/red LEDs and PWM buzzer for immediate level-ok/tilted alerts.
+
+- Onboard software provides:
+
+- Automated Startup Diagnostics: animated multi‑component health checks with error reporting on both displays.
+
+- Exponential IMU Filtering: smoothing factor for reliable tilt readings in dynamic conditions.
+
+- Timestamped CSV Logging: each entry records Date, Time (HH:MM:SS), Lat, Lon, Alt, Distance_m, Roll, Pitch, GPS_fix.
+
+- Freeze & Continue Workflow: “Data saved” acknowledgment, manual unfreeze via Save button.
+
+- History Browsing & Management: scroll through up to 100 past entries, confirm and delete any record.
+
+- Safe Shutdown: 3 s joystick hold with cancel option.
 
 ---
 
